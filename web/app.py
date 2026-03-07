@@ -328,11 +328,21 @@ def api_start_interview():
     data = request.json
     interview_type = data.get('type', 'stock')
     stock_name = data.get('stock_name', '')
+    is_update = data.get('update', False)
 
     if interview_type == 'portfolio':
-        response = interview_manager.start_portfolio_interview()
+        if is_update:
+            current_playbook = storage.get_portfolio_playbook() or {}
+            response = interview_manager.start_update_portfolio_interview(current_playbook)
+        else:
+            response = interview_manager.start_portfolio_interview()
     else:
-        response = interview_manager.start_stock_interview(stock_name)
+        if is_update:
+            stock_id = stock_name.lower().replace(" ", "_")
+            current_playbook = storage.get_stock_playbook(stock_id) or {}
+            response = interview_manager.start_update_stock_interview(stock_name, current_playbook)
+        else:
+            response = interview_manager.start_stock_interview(stock_name)
 
     return jsonify({'message': response})
 
