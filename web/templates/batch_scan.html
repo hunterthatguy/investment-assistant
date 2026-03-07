@@ -13,9 +13,9 @@
         </div>
         <div>
             <button @click="startScan()"
-                :disabled="scanning || stocks.length === 0"
+                :disabled="scanning || scanSelectedCount === 0"
                 class="px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed">
-                <span x-show="!scanning">开始扫描 ({{ stocks|length }} 只股票)</span>
+                <span x-show="!scanning">开始扫描 (<span x-text="scanSelectedCount"></span> 只股票)</span>
                 <span x-show="scanning" class="flex items-center">
                     <svg class="animate-spin h-5 w-5 mr-2" viewBox="0 0 24 24">
                         <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none"></circle>
@@ -34,18 +34,18 @@
                 <span x-show="scanning">扫描进度</span>
                 <span x-show="scanComplete">扫描完成</span>
             </h2>
-            <span class="text-sm text-gray-500" x-text="`${scannedCount}/${stocks.length}`"></span>
+            <span class="text-sm text-gray-500" x-text="`${scannedCount}/${scanTotal}`"></span>
         </div>
 
         <!-- 进度条 -->
         <div class="w-full bg-gray-200 rounded-full h-3 mb-4">
             <div class="bg-purple-600 h-3 rounded-full transition-all duration-300"
-                 :style="`width: ${(scannedCount / stocks.length) * 100}%`"></div>
+                 :style="`width: ${scanTotal > 0 ? (scannedCount / scanTotal) * 100 : 0}%`"></div>
         </div>
 
         <!-- 扫描状态列表 -->
         <div class="space-y-2 max-h-64 overflow-y-auto">
-            <template x-for="stock in stocks" :key="stock.stock_id">
+            <template x-for="stock in stocks.filter(s => s.scanSelected)" :key="stock.stock_id">
                 <div class="flex items-center justify-between py-2 px-3 rounded-lg"
                      :class="{
                          'bg-green-50': stock.scanResult && !stock.scanResult.needs_research,
@@ -86,7 +86,7 @@
             <div class="flex items-center justify-between">
                 <div>
                     <p class="text-purple-800 text-lg font-medium">
-                        扫描了 <strong x-text="stocks.length"></strong> 只股票，
+                        扫描了 <strong x-text="scanTotal"></strong> 只股票，
                         发现 <strong x-text="needResearchStocks.length"></strong> 只可能需要研究
                     </p>
                 </div>
@@ -292,39 +292,51 @@
         </div>
     </div>
 
-    <!-- 初始状态：股票列表 -->
+    <!-- 初始状态：股票列表（带勾选） -->
     <div x-show="!scanning && !scanComplete" class="bg-white rounded-xl shadow-sm border border-gray-100">
-        <div class="p-4 border-b border-gray-100">
-            <h2 class="text-lg font-semibold text-gray-900">待扫描的股票</h2>
+        <div class="p-4 border-b border-gray-100 flex items-center justify-between">
+            <h2 class="text-lg font-semibold text-gray-900">
+                待扫描的股票
+                <span class="text-sm font-normal text-gray-400" x-text="`(已选 ${scanSelectedCount}/${stocks.length})`"></span>
+            </h2>
+            <div x-show="stocks.length > 0" class="flex items-center space-x-2">
+                <button @click="selectAll()"
+                    class="px-3 py-1 text-xs font-medium rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50">
+                    全选
+                </button>
+                <button @click="selectNone()"
+                    class="px-3 py-1 text-xs font-medium rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50">
+                    全不选
+                </button>
+                <button @click="selectInvert()"
+                    class="px-3 py-1 text-xs font-medium rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50">
+                    反选
+                </button>
+            </div>
         </div>
         <div class="divide-y divide-gray-100">
-            {% if stocks %}
-            {% for stock in stocks %}
-            <div class="p-4 flex items-center justify-between">
-                <div>
-                    <p class="font-medium text-gray-900">{{ stock.stock_name }}</p>
-                    <p class="text-sm text-gray-500">{{ stock.core_thesis }}</p>
+            <template x-if="stocks.length > 0">
+                <template x-for="stock in stocks" :key="stock.stock_id">
+                    <label class="p-4 flex items-center space-x-4 cursor-pointer hover:bg-gray-50 transition">
+                        <input type="checkbox" x-model="stock.scanSelected"
+                            class="h-5 w-5 text-purple-600 rounded border-gray-300 focus:ring-purple-500 flex-shrink-0">
+                        <div class="flex-1 min-w-0">
+                            <p class="font-medium text-gray-900" x-text="stock.stock_name"></p>
+                            <p class="text-sm text-gray-500 truncate" x-text="stock.core_thesis"></p>
+                        </div>
+                        <div class="text-right flex-shrink-0">
+                            <p class="text-sm text-gray-500" x-text="stock.last_research ? '上次研究: ' + stock.last_research.date.substring(0, 10) : '从未研究'"></p>
+                            <p class="text-sm font-medium text-purple-600" x-text="`将搜索 ${stock.days_since} 天内的新闻`"></p>
+                        </div>
+                    </label>
+                </template>
+            </template>
+            <template x-if="stocks.length === 0">
+                <div class="p-8 text-center text-gray-500">
+                    <p>没有股票需要扫描</p>
+                    <a href="/add-stock" class="text-blue-600 hover:underline">添加股票 →</a>
                 </div>
-                <div class="text-right">
-                    <p class="text-sm text-gray-500">
-                        {% if stock.last_research %}
-                        上次研究: {{ stock.last_research.date[:10] }}
-                        {% else %}
-                        从未研究
-                        {% endif %}
-                    </p>
-                    <p class="text-sm font-medium text-purple-600">
-                        将搜索 {{ stock.days_since }} 天内的新闻
-                    </p>
-                </div>
-            </div>
-            {% endfor %}
-            {% else %}
-            <div class="p-8 text-center text-gray-500">
-                <p>没有股票需要扫描</p>
-                <a href="/add-stock" class="text-blue-600 hover:underline">添加股票 →</a>
-            </div>
-            {% endif %}
+            </template>
         </div>
     </div>
 </div>
@@ -333,12 +345,20 @@
 {% block scripts %}
 <script>
 function batchScanPage() {
+    const rawStocks = {{ stocks | tojson | safe }};
+    rawStocks.forEach(s => { s.scanSelected = true; });
+
     return {
-        stocks: {{ stocks | tojson | safe }},
+        stocks: rawStocks,
         scanning: false,
         scanComplete: false,
         scannedCount: 0,
+        scanTotal: 0,
         researching: false,
+
+        get scanSelectedCount() {
+            return this.stocks.filter(s => s.scanSelected).length;
+        },
 
         get needResearchStocks() {
             return this.stocks.filter(s => s.scanResult && s.scanResult.needs_research);
@@ -352,23 +372,29 @@ function batchScanPage() {
             return this.stocks.filter(s => s.selected && s.scanResult?.needs_research && !s.researchResult).length;
         },
 
+        selectAll()    { this.stocks.forEach(s => s.scanSelected = true); },
+        selectNone()   { this.stocks.forEach(s => s.scanSelected = false); },
+        selectInvert() { this.stocks.forEach(s => s.scanSelected = !s.scanSelected); },
+
         async startScan() {
+            const toScan = this.stocks.filter(s => s.scanSelected);
+            if (toScan.length === 0) return;
+
             this.scanning = true;
             this.scanComplete = false;
             this.scannedCount = 0;
+            this.scanTotal = toScan.length;
 
-            // 初始化所有股票状态
             for (let stock of this.stocks) {
                 stock.scanning = false;
                 stock.scanResult = null;
-                stock.selected = true;  // 默认选中
+                stock.selected = true;
                 stock.showDetails = false;
                 stock.researching = false;
                 stock.researchResult = null;
             }
 
-            // 逐个扫描
-            for (let stock of this.stocks) {
+            for (let stock of toScan) {
                 stock.scanning = true;
 
                 try {
