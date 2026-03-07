@@ -6,10 +6,12 @@ import os
 import functools
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from flask import Flask, render_template, request, jsonify, redirect, url_for, Response, session
+from flask import Flask, render_template, render_template_string, request, jsonify, redirect, url_for, Response, session
+from werkzeug.exceptions import HTTPException
 from datetime import datetime
 import json
 import hashlib
+import traceback
 
 from core.gemini_client import GeminiClient
 from core.storage import Storage
@@ -30,9 +32,19 @@ _NETWORK_ERROR_HINTS = (
 
 @app.errorhandler(Exception)
 def handle_exception(e):
-    """全局异常兜底：API 路由返回 JSON，页面路由走 Flask 默认处理"""
+    """全局异常兜底：API 路由返回 JSON，页面路由显示友好错误页"""
+    if isinstance(e, HTTPException):
+        if request.path.startswith('/api/'):
+            return jsonify({'error': e.description, 'retryable': False}), e.code
+        return e
+
     if not request.path.startswith('/api/'):
-        raise e
+        app.logger.error("页面 %s 异常:\n%s", request.path, traceback.format_exc())
+        return render_template_string(
+            PAGE_ERROR_TEMPLATE,
+            error_type=type(e).__name__,
+            error_msg=str(e)[:500],
+        ), 500
 
     error_msg = str(e)[:300]
     error_lower = error_msg.lower()
@@ -51,6 +63,22 @@ def handle_exception(e):
         'detail': error_msg,
         'retryable': is_network,
     }), status_code
+
+
+PAGE_ERROR_TEMPLATE = """<!doctype html>
+<html><head><meta charset="utf-8"><title>出错了</title>
+<script src="https://cdn.tailwindcss.com"></script></head>
+<body class="bg-gray-50 flex items-center justify-center min-h-screen">
+<div class="bg-white rounded-xl shadow-sm border p-8 max-w-lg text-center">
+  <div class="text-5xl mb-4">⚠️</div>
+  <h1 class="text-xl font-bold text-gray-900 mb-2">页面加载出错</h1>
+  <p class="text-gray-600 mb-4">{{ error_type }}: {{ error_msg }}</p>
+  <div class="flex justify-center space-x-3">
+    <a href="/" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 text-sm">返回首页</a>
+    <button onclick="location.reload()" class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 text-sm">刷新重试</button>
+  </div>
+</div>
+</body></html>"""
 
 
 # ==================== 认证配置 ====================
@@ -876,6 +904,7 @@ if __name__ == '__main__':
     print("\n" + "="*50)
     print("投资研究助手 Web 版")
     print("="*50)
-    print("\n访问地址: http://localhost:5000")
+    port = int(os.environ.get('PORT', 5001))
+    print(f"\n访问地址: http://localhost:{port}")
     print("按 Ctrl+C 停止服务\n")
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=port)
