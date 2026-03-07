@@ -3,9 +3,11 @@
 import os
 import json
 import re
+import time
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Callable, TypeVar
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 
 try:
     from google import genai
@@ -13,6 +15,25 @@ try:
 except ImportError:
     print("请先安装 google-genai: pip install google-genai")
     raise
+
+T = TypeVar("T")
+
+MAX_RETRIES = 2
+RETRY_BASE_DELAY = 3
+SEARCH_DIM_TIMEOUT = 45
+SEARCH_TOTAL_TIMEOUT = 120
+MAX_SEARCH_WORKERS = 4
+_RETRYABLE_KEYWORDS = frozenset((
+    "429", "503", "500", "timeout", "deadline",
+    "unavailable", "resource_exhausted", "overloaded",
+    "internal", "rate_limit",
+    "ssl", "record_layer", "readerror", "read_error", "readtimeout",
+    "connection_reset", "connection_error", "connectionerror",
+    "remotedisconnected", "remote_disconnected",
+    "disconnected", "server disconnected", "broken pipe", "reset by peer",
+    "protocol_error", "protocolerror", "remoteprotocol",
+    "eof occurred", "incomplete read",
+))
 
 
 class GeminiClient:
@@ -24,35 +45,74 @@ class GeminiClient:
             raise ValueError("请设置 GEMINI_API_KEY 环境变量或在 config.json 中配置")
 
         self.client = genai.Client(api_key=self.api_key)
-        self.model_pro = "gemini-2.5-pro"  # 用于深度研究和复杂分析
-        self.model_flash = "gemini-2.0-flash"  # 用于快速任务
+        self.model_pro = "gemini-2.5-pro"
+        self.model_flash = "gemini-2.5-flash"
+
+    # ==================== 重试与容错 ====================
+
+    @staticmethod
+    def _is_retryable(error: Exception) -> bool:
+        error_str = str(error).lower()
+        if any(kw in error_str for kw in _RETRYABLE_KEYWORDS):
+            return True
+        type_name = type(error).__name__.lower()
+        return any(kw in type_name for kw in (
+            "read", "connect", "ssl", "timeout", "protocol", "disconnect",
+        ))
+
+    @staticmethod
+    def _call_with_retry(
+        fn: Callable[[], T],
+        *,
+        max_retries: int = MAX_RETRIES,
+        base_delay: float = RETRY_BASE_DELAY,
+    ) -> T:
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_retries + 1):
+            try:
+                return fn()
+            except Exception as exc:
+                last_exc = exc
+                if attempt < max_retries and GeminiClient._is_retryable(exc):
+                    delay = base_delay * (2 ** attempt)
+                    print(
+                        f"API 调用失败 (第 {attempt + 1}/{max_retries + 1} 次), "
+                        f"{delay:.0f}s 后重试: {str(exc)[:120]}"
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
+        raise last_exc  # type: ignore[misc]
+
+    # ==================== 核心 API ====================
 
     def chat(self, prompt: str, history: Optional[List[Dict]] = None) -> str:
-        """普通对话"""
-        if history:
-            # 构建带历史的对话
-            messages = []
-            for msg in history:
-                role = "user" if msg["role"] == "user" else "model"
+        """普通对话（自动重试临时性错误）"""
+        def _call() -> str:
+            if history:
+                messages = []
+                for msg in history:
+                    role = "user" if msg["role"] == "user" else "model"
+                    messages.append(types.Content(
+                        role=role,
+                        parts=[types.Part(text=msg["content"])]
+                    ))
                 messages.append(types.Content(
-                    role=role,
-                    parts=[types.Part(text=msg["content"])]
+                    role="user",
+                    parts=[types.Part(text=prompt)]
                 ))
-            messages.append(types.Content(
-                role="user",
-                parts=[types.Part(text=prompt)]
-            ))
-            response = self.client.models.generate_content(
-                model=self.model_pro,
-                contents=messages
-            )
-        else:
-            # 简单对话，直接传字符串
-            response = self.client.models.generate_content(
-                model=self.model_pro,
-                contents=prompt
-            )
-        return response.text
+                response = self.client.models.generate_content(
+                    model=self.model_pro,
+                    contents=messages
+                )
+            else:
+                response = self.client.models.generate_content(
+                    model=self.model_pro,
+                    contents=prompt
+                )
+            return response.text
+
+        return self._call_with_retry(_call)
 
     def chat_with_system(self, system_prompt: str, user_message: str,
                          history: Optional[List[Dict]] = None) -> str:
@@ -68,7 +128,7 @@ class GeminiClient:
         return self.chat(full_prompt)
 
     def search(self, query: str, time_range_days: int = 7) -> str:
-        """带搜索的对话（使用 Google Search grounding）"""
+        """带搜索的对话（使用 Google Search grounding，自动重试）"""
         end_date = datetime.now()
         start_date = end_date - timedelta(days=time_range_days)
 
@@ -84,7 +144,7 @@ class GeminiClient:
 
 如果没有找到相关信息，请说明。"""
 
-        try:
+        def _call() -> str:
             response = self.client.models.generate_content(
                 model=self.model_pro,
                 contents=search_prompt,
@@ -93,8 +153,10 @@ class GeminiClient:
                 )
             )
             return response.text
+
+        try:
+            return self._call_with_retry(_call)
         except Exception as e:
-            # 如果搜索功能不可用，返回提示
             return f"搜索功能暂时不可用: {str(e)}\n请手动上传相关资料。"
 
     def search_news_structured(self, stock_name: str, related_entities: List[str],
@@ -171,24 +233,66 @@ class GeminiClient:
             "search_warnings": []
         }
 
-        for dim in search_dimensions:
-            news, error = self._search_single_dimension(
-                stock_name=stock_name,
-                dimension=dim["dimension"],
-                query=dim["query"],
-                focus=dim["focus"],
-                date_range_str=date_range_str,
-                time_range_days=time_range_days
-            )
-            if error:
-                search_metadata["failed_dimensions"].append({
-                    "dimension": dim["dimension"],
-                    "error": error
-                })
-                search_metadata["search_warnings"].append(f"维度「{dim['dimension']}」搜索失败")
-            else:
-                search_metadata["successful_dimensions"] += 1
-            all_news.extend(news)
+        workers = min(len(search_dimensions), MAX_SEARCH_WORKERS)
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            future_to_dim = {
+                executor.submit(
+                    self._search_single_dimension,
+                    stock_name=stock_name,
+                    dimension=dim["dimension"],
+                    query=dim["query"],
+                    focus=dim["focus"],
+                    date_range_str=date_range_str,
+                    time_range_days=time_range_days,
+                ): dim
+                for dim in search_dimensions
+            }
+
+            completed = set()
+            try:
+                for future in as_completed(future_to_dim, timeout=SEARCH_TOTAL_TIMEOUT):
+                    completed.add(future)
+                    dim = future_to_dim[future]
+                    try:
+                        news, error = future.result(timeout=SEARCH_DIM_TIMEOUT)
+                        if error:
+                            search_metadata["failed_dimensions"].append({
+                                "dimension": dim["dimension"],
+                                "error": error
+                            })
+                            search_metadata["search_warnings"].append(
+                                f"维度「{dim['dimension']}」搜索失败"
+                            )
+                        else:
+                            search_metadata["successful_dimensions"] += 1
+                        all_news.extend(news)
+                    except FuturesTimeoutError:
+                        search_metadata["failed_dimensions"].append({
+                            "dimension": dim["dimension"],
+                            "error": f"单维度搜索超时（{SEARCH_DIM_TIMEOUT}s）"
+                        })
+                        search_metadata["search_warnings"].append(
+                            f"维度「{dim['dimension']}」搜索超时"
+                        )
+                    except Exception as exc:
+                        search_metadata["failed_dimensions"].append({
+                            "dimension": dim["dimension"],
+                            "error": str(exc)[:200]
+                        })
+                        search_metadata["search_warnings"].append(
+                            f"维度「{dim['dimension']}」搜索异常"
+                        )
+            except FuturesTimeoutError:
+                for future, dim in future_to_dim.items():
+                    if future not in completed:
+                        future.cancel()
+                        search_metadata["failed_dimensions"].append({
+                            "dimension": dim["dimension"],
+                            "error": f"搜索总超时（{SEARCH_TOTAL_TIMEOUT}s）"
+                        })
+                        search_metadata["search_warnings"].append(
+                            f"维度「{dim['dimension']}」因总超时被取消"
+                        )
 
         # 去重（基于标题相似度）
         unique_news = self._deduplicate_news(all_news)
@@ -206,7 +310,7 @@ class GeminiClient:
 
     def _search_single_dimension(self, stock_name: str, dimension: str, query: str,
                                   focus: str, date_range_str: str, time_range_days: int) -> tuple:
-        """单维度搜索，返回 (news_list, error_message)"""
+        """单维度搜索，返回 (news_list, error_message)。内置 1 次重试。"""
         search_prompt = f"""搜索关于 "{query}" 在过去 {time_range_days} 天（{date_range_str}）的重要新闻。
 
 搜索维度: {dimension}
@@ -230,25 +334,27 @@ class GeminiClient:
 
 最多返回 5 条最重要的新闻。如果没有找到，返回空数组。"""
 
-        try:
+        def _call() -> str:
             response = self.client.models.generate_content(
-                model=self.model_flash,  # 使用更快的模型进行多次搜索
+                model=self.model_flash,
                 contents=search_prompt,
                 config=types.GenerateContentConfig(
                     tools=[types.Tool(google_search=types.GoogleSearch())]
                 )
             )
+            return response.text
 
-            text = response.text
+        try:
+            text = self._call_with_retry(_call, max_retries=1)
+
             json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
             if json_match:
                 try:
                     result = json.loads(json_match.group(1))
                     news = result.get("news", [])
-                    # 确保每条新闻都有维度标签
                     for n in news:
                         n["dimension"] = dimension
-                    return news, None  # 成功，无错误
+                    return news, None
                 except json.JSONDecodeError:
                     pass
 
@@ -257,16 +363,16 @@ class GeminiClient:
                 news = result.get("news", [])
                 for n in news:
                     n["dimension"] = dimension
-                return news, None  # 成功，无错误
+                return news, None
             except json.JSONDecodeError:
                 pass
 
-            return [], None  # 无结果但没有错误
+            return [], None
 
         except Exception as e:
-            error_msg = str(e)
+            error_msg = str(e)[:200]
             print(f"搜索维度 {dimension} 失败: {error_msg}")
-            return [], error_msg  # 返回错误信息
+            return [], error_msg
 
     def _deduplicate_news(self, news_list: List[Dict]) -> List[Dict]:
         """基于标题去重"""
@@ -285,7 +391,7 @@ class GeminiClient:
         return unique_news
 
     def analyze_file(self, file_path: str, prompt: str) -> str:
-        """分析文件（支持 PDF、图片）"""
+        """分析文件（支持 PDF、图片，自动重试）"""
         path = Path(file_path).expanduser()
         if not path.exists():
             return f"文件不存在: {file_path}"
@@ -303,21 +409,23 @@ class GeminiClient:
                 if suffix == ".jpg":
                     mime_type = "image/jpeg"
             elif suffix in [".txt", ".md"]:
-                # 文本文件直接读取
                 with open(path, "r", encoding="utf-8") as f:
                     text_content = f.read()
                 return self.chat(f"{prompt}\n\n文件内容:\n{text_content}")
             else:
                 return f"不支持的文件格式: {suffix}"
 
-            response = self.client.models.generate_content(
-                model=self.model_pro,
-                contents=[
-                    types.Part(inline_data=types.Blob(data=file_data, mime_type=mime_type)),
-                    types.Part(text=prompt)
-                ]
-            )
-            return response.text
+            def _call() -> str:
+                response = self.client.models.generate_content(
+                    model=self.model_pro,
+                    contents=[
+                        types.Part(inline_data=types.Blob(data=file_data, mime_type=mime_type)),
+                        types.Part(text=prompt)
+                    ]
+                )
+                return response.text
+
+            return self._call_with_retry(_call)
         except Exception as e:
             return f"文件分析失败: {str(e)}"
 
@@ -335,8 +443,6 @@ class GeminiClient:
             # 尝试直接解析
             return json.loads(response)
         except json.JSONDecodeError:
-            # 尝试从 markdown 代码块中提取
-            import re
             json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response)
             if json_match:
                 try:
