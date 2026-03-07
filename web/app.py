@@ -21,6 +21,37 @@ from core.preference_learner import PreferenceLearner
 app = Flask(__name__)
 app.secret_key = os.urandom(24)  # 用于 session
 
+_NETWORK_ERROR_HINTS = (
+    "ssl", "timeout", "disconnected", "connection", "protocol",
+    "broken pipe", "reset by peer", "eof occurred", "record_layer",
+    "readerror", "unavailable", "overloaded",
+)
+
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """全局异常兜底：API 路由返回 JSON，页面路由走 Flask 默认处理"""
+    if not request.path.startswith('/api/'):
+        raise e
+
+    error_msg = str(e)[:300]
+    error_lower = error_msg.lower()
+    type_lower = type(e).__name__.lower()
+    is_network = (
+        any(kw in error_lower for kw in _NETWORK_ERROR_HINTS)
+        or any(kw in type_lower for kw in ("read", "connect", "ssl", "timeout", "protocol", "disconnect"))
+    )
+    status_code = 503 if is_network else 500
+    user_msg = "网络连接不稳定，AI 服务暂时无法响应，请稍后重试" if is_network else "服务内部错误"
+
+    app.logger.error("API %s 异常 [%s]: %s", request.path, type(e).__name__, error_msg)
+
+    return jsonify({
+        'error': user_msg,
+        'detail': error_msg,
+        'retryable': is_network,
+    }), status_code
+
 
 # ==================== 认证配置 ====================
 
