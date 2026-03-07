@@ -4,6 +4,7 @@ import os
 import json
 import re
 import time
+import traceback
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Callable, TypeVar
 from pathlib import Path
@@ -28,11 +29,12 @@ _RETRYABLE_KEYWORDS = frozenset((
     "unavailable", "resource_exhausted", "overloaded",
     "internal", "rate_limit",
     "ssl", "record_layer", "readerror", "read_error", "readtimeout",
+    "unexpected_eof", "unexpected eof",
     "connection_reset", "connection_error", "connectionerror",
     "remotedisconnected", "remote_disconnected",
     "disconnected", "server disconnected", "broken pipe", "reset by peer",
     "protocol_error", "protocolerror", "remoteprotocol",
-    "eof occurred", "incomplete read",
+    "eof occurred", "incomplete read", "violation of protocol",
 ))
 
 
@@ -66,8 +68,10 @@ class GeminiClient:
         *,
         max_retries: int = MAX_RETRIES,
         base_delay: float = RETRY_BASE_DELAY,
+        label: str = "",
     ) -> T:
         last_exc: Optional[Exception] = None
+        tag = f"[{label}] " if label else ""
         for attempt in range(max_retries + 1):
             try:
                 return fn()
@@ -76,11 +80,14 @@ class GeminiClient:
                 if attempt < max_retries and GeminiClient._is_retryable(exc):
                     delay = base_delay * (2 ** attempt)
                     print(
-                        f"API 调用失败 (第 {attempt + 1}/{max_retries + 1} 次), "
-                        f"{delay:.0f}s 后重试: {str(exc)[:120]}"
+                        f"{tag}API 调用失败 (第 {attempt + 1}/{max_retries + 1} 次), "
+                        f"{delay:.0f}s 后重试: {type(exc).__name__}: {str(exc)[:200]}"
                     )
+                    traceback.print_exc()
                     time.sleep(delay)
                     continue
+                print(f"{tag}API 调用最终失败 (已重试 {attempt} 次): {type(exc).__name__}: {str(exc)[:300]}")
+                traceback.print_exc()
                 raise
         raise last_exc  # type: ignore[misc]
 
@@ -112,7 +119,7 @@ class GeminiClient:
                 )
             return response.text
 
-        return self._call_with_retry(_call)
+        return self._call_with_retry(_call, label="chat")
 
     def chat_with_system(self, system_prompt: str, user_message: str,
                          history: Optional[List[Dict]] = None) -> str:
@@ -155,8 +162,10 @@ class GeminiClient:
             return response.text
 
         try:
-            return self._call_with_retry(_call)
+            return self._call_with_retry(_call, label="search")
         except Exception as e:
+            print(f"[search] 搜索最终失败，返回降级结果:")
+            traceback.print_exc()
             return f"搜索功能暂时不可用: {str(e)}\n请手动上传相关资料。"
 
     def search_news_structured(self, stock_name: str, related_entities: List[str],
@@ -275,9 +284,11 @@ class GeminiClient:
                             f"维度「{dim['dimension']}」搜索超时"
                         )
                     except Exception as exc:
+                        print(f"[search_news] 维度「{dim['dimension']}」异常:")
+                        traceback.print_exc()
                         search_metadata["failed_dimensions"].append({
                             "dimension": dim["dimension"],
-                            "error": str(exc)[:200]
+                            "error": f"{type(exc).__name__}: {str(exc)[:200]}"
                         })
                         search_metadata["search_warnings"].append(
                             f"维度「{dim['dimension']}」搜索异常"
@@ -345,7 +356,7 @@ class GeminiClient:
             return response.text
 
         try:
-            text = self._call_with_retry(_call, max_retries=1)
+            text = self._call_with_retry(_call, max_retries=2, label=f"search-{dimension}")
 
             json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', text)
             if json_match:
@@ -370,8 +381,9 @@ class GeminiClient:
             return [], None
 
         except Exception as e:
-            error_msg = str(e)[:200]
-            print(f"搜索维度 {dimension} 失败: {error_msg}")
+            error_msg = f"{type(e).__name__}: {str(e)[:200]}"
+            print(f"[search-{dimension}] 搜索维度最终失败:")
+            traceback.print_exc()
             return [], error_msg
 
     def _deduplicate_news(self, news_list: List[Dict]) -> List[Dict]:
@@ -425,8 +437,10 @@ class GeminiClient:
                 )
                 return response.text
 
-            return self._call_with_retry(_call)
+            return self._call_with_retry(_call, label="analyze_file")
         except Exception as e:
+            print(f"[analyze_file] 文件分析失败:")
+            traceback.print_exc()
             return f"文件分析失败: {str(e)}"
 
     def structured_output(self, prompt: str, schema_description: str) -> Dict:

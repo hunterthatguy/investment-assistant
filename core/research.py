@@ -2,6 +2,7 @@
 
 import json
 import re
+import traceback
 from typing import Dict, List, Optional
 from datetime import datetime
 
@@ -288,8 +289,13 @@ class ResearchEngine:
         # 获取历史上传文件
         historical_uploads = self.storage.get_historical_uploads(stock_id, limit=5)
 
-        # 执行搜索
-        search_results = self._execute_searches(research_plan, stock_playbook)
+        # 执行搜索（搜索失败不阻断研究）
+        try:
+            search_results = self._execute_searches(research_plan, stock_playbook)
+        except Exception as e:
+            print(f"[research] 搜索阶段异常，降级继续研究:")
+            traceback.print_exc()
+            search_results = f"（搜索阶段异常: {type(e).__name__}: {str(e)[:200]}，基于已有信息继续研究）"
 
         # 格式化数据
         portfolio_str = json.dumps(portfolio_playbook, ensure_ascii=False, indent=2) if portfolio_playbook else "（暂无）"
@@ -364,7 +370,14 @@ class ResearchEngine:
             search_results=search_results
         )
 
-        response = self.client.chat(prompt)
+        try:
+            response = self.client.chat(prompt)
+        except Exception as e:
+            print(f"[research] 深度研究主调用失败:")
+            traceback.print_exc()
+            raise RuntimeError(
+                f"深度研究 AI 调用失败 ({type(e).__name__}): {str(e)[:300]}"
+            ) from e
 
         # 解析结论
         conclusion = self._extract_conclusion(response)
@@ -388,13 +401,21 @@ class ResearchEngine:
             "executed_at": datetime.now().isoformat()
         }
 
+    def _safe_search(self, query: str, days: int) -> str:
+        """单次搜索，失败时返回错误提示而非抛异常"""
+        try:
+            return self.client.search(query, days)
+        except Exception as e:
+            print(f"[research] 搜索失败 query={query!r}:")
+            traceback.print_exc()
+            return f"（搜索失败: {type(e).__name__}: {str(e)[:150]}）"
+
     def _execute_searches(self, research_plan: Dict, playbook: Optional[Dict]) -> str:
         """执行研究计划中的搜索（支持新的 research_modules 结构）"""
-        days = 14  # 默认搜索过去14天
+        days = 14
 
         results = []
 
-        # 新结构：从 research_modules 中提取搜索查询
         research_modules = research_plan.get("research_modules", [])
         if research_modules:
             for module in research_modules:
@@ -404,38 +425,32 @@ class ResearchEngine:
 
                 results.append(f"\n## 📊 研究模块: {module_name}\n")
 
-                # 执行该模块的搜索查询
-                for query in search_queries[:3]:  # 每个模块最多3个搜索
-                    result = self.client.search(query, days)
+                for query in search_queries[:3]:
+                    result = self._safe_search(query, days)
                     results.append(f"### 🔍 搜索: {query}\n{result}\n")
 
-                # 如果没有搜索查询，用关键问题搜索
                 if not search_queries and key_questions:
                     for q in key_questions[:2]:
-                        result = self.client.search(q, days)
+                        result = self._safe_search(q, days)
                         results.append(f"### 🔍 问题: {q}\n{result}\n")
 
-        # 兼容旧结构
         if not results:
-            # 尝试从 hypothesis_to_test 中提取验证方法
             hypotheses = research_plan.get("hypothesis_to_test", [])
             for h in hypotheses[:2]:
                 how_to_verify = h.get("how_to_verify", "")
                 if how_to_verify:
-                    result = self.client.search(how_to_verify, days)
+                    result = self._safe_search(how_to_verify, days)
                     results.append(f"### 🔍 验证假设: {h.get('hypothesis', '')}\n{result}\n")
 
-        # 最后的兜底：搜索研究目标
         if not results:
             objective = research_plan.get("research_objective", "")
             if objective:
-                result = self.client.search(objective, days)
+                result = self._safe_search(objective, days)
                 results.append(f"### 🔍 研究目标: {objective}\n{result}\n")
 
-            # 或者用旧结构的 core_questions
             questions = research_plan.get("core_questions", [])
             for q in questions[:3]:
-                result = self.client.search(q, days)
+                result = self._safe_search(q, days)
                 results.append(f"### 🔍 {q}\n{result}\n")
 
         return "\n".join(results) if results else "（未执行搜索）"
