@@ -201,6 +201,8 @@ def index():
                     # 获取最近研究
                     history = storage.get_recent_research(stock_dir.name, limit=1)
                     playbook['last_research'] = history[0] if history else None
+                    # 获取最新投资笔记
+                    playbook['latest_note'] = storage.get_latest_note(stock_dir.name)
                     stocks.append(playbook)
     return render_template('index.html', portfolio=portfolio, stocks=stocks)
 
@@ -225,6 +227,8 @@ def stocks():
                     # 获取最近研究
                     history = storage.get_recent_research(stock_dir.name, limit=1)
                     playbook['last_research'] = history[0] if history else None
+                    # 获取最新投资笔记
+                    playbook['latest_note'] = storage.get_latest_note(stock_dir.name)
                     stock_list.append(playbook)
     return render_template('stocks.html', stocks=stock_list)
 
@@ -345,6 +349,47 @@ def api_delete_stock(stock_id):
     if stock_dir.exists():
         shutil.rmtree(stock_dir)
     return jsonify({'success': True})
+
+# ==================== 投资笔记 API ====================
+
+@app.route('/api/notes/<stock_id>', methods=['GET'])
+def api_get_notes(stock_id):
+    """获取股票的投资笔记"""
+    notes = storage.get_notes(stock_id)
+    return jsonify({'notes': notes})
+
+@app.route('/api/notes/<stock_id>', methods=['POST'])
+def api_add_note(stock_id):
+    """添加投资笔记"""
+    data = request.json
+    note = {
+        'date': data.get('date', datetime.now().strftime('%Y-%m-%d')),
+        'close_price': data.get('close_price', ''),
+        'shares': data.get('shares', ''),
+        'trade_type': data.get('trade_type', ''),
+        'content': data.get('content', '')
+    }
+    note_id = storage.save_note(stock_id, note)
+    return jsonify({'success': True, 'note_id': note_id})
+
+@app.route('/api/notes/<stock_id>/<note_id>', methods=['PUT'])
+def api_update_note(stock_id, note_id):
+    """更新投资笔记"""
+    data = request.json
+    success = storage.update_note(stock_id, note_id, data)
+    return jsonify({'success': success})
+
+@app.route('/api/notes/<stock_id>/<note_id>', methods=['DELETE'])
+def api_delete_note(stock_id, note_id):
+    """删除投资笔记"""
+    success = storage.delete_note(stock_id, note_id)
+    return jsonify({'success': success})
+
+@app.route('/api/notes/<stock_id>/latest', methods=['GET'])
+def api_get_latest_note(stock_id):
+    """获取最新一条投资笔记"""
+    note = storage.get_latest_note(stock_id)
+    return jsonify({'note': note})
 
 @app.route('/api/interview/start', methods=['POST'])
 def api_start_interview():

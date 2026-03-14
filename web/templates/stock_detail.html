@@ -241,6 +241,89 @@
                 </div>
             </div>
             {% endif %}
+
+            <!-- 投资笔记 -->
+            <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-6" x-data="notesModule()">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold text-gray-900">📝 投资笔记</h2>
+                    <button @click="showAddForm = true" class="text-blue-600 hover:text-blue-700 text-sm font-medium">
+                        + 新增
+                    </button>
+                </div>
+
+                <!-- 新增/编辑表单 -->
+                <div x-show="showAddForm" x-cloak class="mb-4 p-4 bg-blue-50 rounded-lg space-y-3">
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs text-gray-600 mb-1">日期</label>
+                            <input type="date" x-model="form.date"
+                                class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-600 mb-1">收盘价</label>
+                            <input type="text" x-model="form.close_price" placeholder="如: 150.00"
+                                class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-600 mb-1">持有股数</label>
+                            <input type="text" x-model="form.shares" placeholder="如: 100"
+                                class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs text-gray-600 mb-1">交易情况</label>
+                            <select x-model="form.trade_type"
+                                class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500">
+                                <option value="">无交易</option>
+                                <option value="买入">买入</option>
+                                <option value="卖出">卖出</option>
+                                <option value="加仓">加仓</option>
+                                <option value="减仓">减仓</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-xs text-gray-600 mb-1">笔记内容</label>
+                        <textarea x-model="form.content" rows="3" placeholder="记录投资心得、市场观察..."
+                            class="w-full px-2 py-1.5 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-blue-500"></textarea>
+                    </div>
+                    <div class="flex justify-end space-x-2">
+                        <button @click="cancelEdit()" class="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-700">取消</button>
+                        <button @click="saveNote()" :disabled="!form.content.trim()"
+                            class="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">保存</button>
+                    </div>
+                </div>
+
+                <!-- 笔记列表 -->
+                <div x-show="!showAddForm" class="space-y-3 max-h-80 overflow-y-auto">
+                    <template x-if="notes.length === 0">
+                        <p class="text-gray-400 text-sm text-center py-4">暂无投资笔记</p>
+                    </template>
+                    <template x-for="(note, index) in notes" :key="note.id">
+                        <div class="p-3 bg-gray-50 rounded-lg border-l-4"
+                             :class="note.trade_type === '买入' || note.trade_type === '加仓' ? 'border-green-400' :
+                                     note.trade_type === '卖出' || note.trade_type === '减仓' ? 'border-red-400' : 'border-gray-300'">
+                            <div class="flex items-start justify-between">
+                                <div class="flex-1">
+                                    <div class="flex items-center space-x-2 text-xs text-gray-500 mb-1">
+                                        <span x-text="note.date"></span>
+                                        <span x-show="note.close_price">| 收盘: <span x-text="note.close_price"></span></span>
+                                        <span x-show="note.shares">| 持有: <span x-text="note.shares"></span>股</span>
+                                        <span x-show="note.trade_type" class="px-1.5 py-0.5 rounded text-xs font-medium"
+                                            :class="note.trade_type === '买入' || note.trade_type === '加仓' ? 'bg-green-100 text-green-700' :
+                                                    note.trade_type === '卖出' || note.trade_type === '减仓' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-600'"
+                                            x-text="note.trade_type"></span>
+                                    </div>
+                                    <p class="text-sm text-gray-700 whitespace-pre-wrap" x-text="note.content"></p>
+                                </div>
+                                <div class="flex space-x-1 ml-2">
+                                    <button @click="editNote(note)" class="text-gray-400 hover:text-blue-600 text-xs">编辑</button>
+                                    <button @click="deleteNote(note.id)" class="text-gray-400 hover:text-red-600 text-xs">删除</button>
+                                </div>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1601,6 +1684,96 @@ function stockDetail() {
             this.openResearchModal();
         }
     }
+}
+
+// 投资笔记模块
+function notesModule() {
+    return {
+        notes: [],
+        showAddForm: false,
+        editingId: null,
+        form: {
+            date: new Date().toISOString().split('T')[0],
+            close_price: '',
+            shares: '',
+            trade_type: '',
+            content: ''
+        },
+        stockId: '{{ stock_id }}',
+
+        init() {
+            this.loadNotes();
+        },
+
+        async loadNotes() {
+            const response = await fetch(`/api/notes/${this.stockId}`);
+            const data = await response.json();
+            this.notes = data.notes || [];
+        },
+
+        editNote(note) {
+            this.editingId = note.id;
+            this.form = {
+                date: note.date || new Date().toISOString().split('T')[0],
+                close_price: note.close_price || '',
+                shares: note.shares || '',
+                trade_type: note.trade_type || '',
+                content: note.content || ''
+            };
+            this.showAddForm = true;
+        },
+
+        cancelEdit() {
+            this.showAddForm = false;
+            this.editingId = null;
+            this.resetForm();
+        },
+
+        resetForm() {
+            this.form = {
+                date: new Date().toISOString().split('T')[0],
+                close_price: '',
+                shares: '',
+                trade_type: '',
+                content: ''
+            };
+        },
+
+        async saveNote() {
+            if (!this.form.content.trim()) return;
+
+            if (this.editingId) {
+                // 更新笔记
+                await fetch(`/api/notes/${this.stockId}/${this.editingId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.form)
+                });
+            } else {
+                // 新增笔记
+                await fetch(`/api/notes/${this.stockId}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(this.form)
+                });
+            }
+
+            this.showAddForm = false;
+            this.editingId = null;
+            this.resetForm();
+            this.loadNotes();
+        },
+
+        async deleteNote(noteId) {
+            if (!confirm('确定要删除这条笔记吗？')) return;
+
+            await fetch(`/api/notes/${this.stockId}/${noteId}`, {
+                method: 'DELETE'
+            });
+
+            this.loadNotes();
+        }
+    };
 }
 </script>
 {% endblock %}

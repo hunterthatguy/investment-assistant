@@ -241,6 +241,22 @@
                             {% if stock.core_thesis and stock.core_thesis.summary %}
                             <p class="text-sm text-gray-500 mt-1">{{ stock.core_thesis.summary }}</p>
                             {% endif %}
+                            <!-- 最新投资笔记 -->
+                            {% if stock.latest_note %}
+                            <div class="mt-2 flex items-center space-x-2 text-xs">
+                                <span class="text-amber-600">📝</span>
+                                <span class="text-gray-500">{{ stock.latest_note.date }}</span>
+                                {% if stock.latest_note.trade_type %}
+                                <span class="px-1.5 py-0.5 rounded font-medium
+                                    {% if stock.latest_note.trade_type in ['买入', '加仓'] %}bg-green-100 text-green-700
+                                    {% elif stock.latest_note.trade_type in ['卖出', '减仓'] %}bg-red-100 text-red-700
+                                    {% else %}bg-gray-100 text-gray-600{% endif %}">
+                                    {{ stock.latest_note.trade_type }}
+                                </span>
+                                {% endif %}
+                                <span class="text-gray-600 truncate max-w-xs">{{ stock.latest_note.content[:50] }}{% if stock.latest_note.content|length > 50 %}...{% endif %}</span>
+                            </div>
+                            {% endif %}
                         </div>
                         <div class="flex-shrink-0 ml-4 flex items-center space-x-3">
                             <!-- 上次研究时间 -->

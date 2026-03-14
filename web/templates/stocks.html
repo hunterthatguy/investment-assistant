@@ -49,6 +49,33 @@
                 </div>
                 {% endif %}
 
+                <!-- 最新投资笔记 -->
+                {% if stock.latest_note %}
+                <div class="mb-4 p-2 bg-amber-50 rounded-lg border-l-2 border-amber-300">
+                    <div class="flex items-center justify-between text-xs text-gray-500 mb-1">
+                        <span>📝 最新笔记</span>
+                        <span>{{ stock.latest_note.date }}</span>
+                    </div>
+                    <p class="text-sm text-gray-700 line-clamp-2">{{ stock.latest_note.content[:80] }}{% if stock.latest_note.content|length > 80 %}...{% endif %}</p>
+                    <div class="flex items-center space-x-2 mt-1 text-xs text-gray-500">
+                        {% if stock.latest_note.trade_type %}
+                        <span class="px-1.5 py-0.5 rounded font-medium
+                            {% if stock.latest_note.trade_type in ['买入', '加仓'] %}bg-green-100 text-green-700
+                            {% elif stock.latest_note.trade_type in ['卖出', '减仓'] %}bg-red-100 text-red-700
+                            {% else %}bg-gray-100 text-gray-600{% endif %}">
+                            {{ stock.latest_note.trade_type }}
+                        </span>
+                        {% endif %}
+                        {% if stock.latest_note.close_price %}
+                        <span>收盘: {{ stock.latest_note.close_price }}</span>
+                        {% endif %}
+                        {% if stock.latest_note.shares %}
+                        <span>持有: {{ stock.latest_note.shares }}股</span>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+
                 <!-- 最近研究 -->
                 {% if stock.last_research %}
                 <div class="pt-4 border-t border-gray-100">

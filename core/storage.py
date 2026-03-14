@@ -443,6 +443,87 @@ class Storage:
 
         return "\n".join(lines) if len(lines) > 1 else "（暂无用户偏好记录）"
 
+    # ==================== 投资笔记 ====================
+
+    def get_notes(self, stock_id: str) -> List[Dict]:
+        """获取股票的投资笔记"""
+        notes_path = self._get_stock_dir(stock_id) / "notes.json"
+        if notes_path.exists():
+            with open(notes_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("notes", [])
+        return []
+
+    def save_note(self, stock_id: str, note: Dict) -> str:
+        """保存一条投资笔记，返回笔记 ID"""
+        notes_path = self._get_stock_dir(stock_id) / "notes.json"
+
+        # 读取现有笔记
+        if notes_path.exists():
+            with open(notes_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            data = {"stock_id": stock_id, "notes": []}
+
+        # 生成 ID
+        note_id = f"note_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{len(data['notes'])}"
+        note["id"] = note_id
+        note["created_at"] = datetime.now().isoformat()
+        note["updated_at"] = note["created_at"]
+
+        data["notes"].insert(0, note)  # 新笔记放在最前面
+
+        with open(notes_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        return note_id
+
+    def update_note(self, stock_id: str, note_id: str, updates: Dict) -> bool:
+        """更新投资笔记"""
+        notes_path = self._get_stock_dir(stock_id) / "notes.json"
+
+        if not notes_path.exists():
+            return False
+
+        with open(notes_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        for note in data.get("notes", []):
+            if note.get("id") == note_id:
+                note.update(updates)
+                note["updated_at"] = datetime.now().isoformat()
+
+                with open(notes_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                return True
+
+        return False
+
+    def delete_note(self, stock_id: str, note_id: str) -> bool:
+        """删除投资笔记"""
+        notes_path = self._get_stock_dir(stock_id) / "notes.json"
+
+        if not notes_path.exists():
+            return False
+
+        with open(notes_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        original_len = len(data.get("notes", []))
+        data["notes"] = [n for n in data.get("notes", []) if n.get("id") != note_id]
+
+        if len(data["notes"]) < original_len:
+            with open(notes_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            return True
+
+        return False
+
+    def get_latest_note(self, stock_id: str) -> Optional[Dict]:
+        """获取最新一条投资笔记"""
+        notes = self.get_notes(stock_id)
+        return notes[0] if notes else None
+
     # ==================== 日志 ====================
 
     def log(self, message: str, level: str = "INFO"):
